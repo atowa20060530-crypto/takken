@@ -30,6 +30,11 @@ const I = {
   circleCircle: S('<circle cx="12" cy="12" r="9.2"/><circle cx="12" cy="12" r="4.5"/>'),
   listRect: S('<rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="M10 9h8M10 15h8M6.5 9v.01M6.5 15v.01"/>'),
   xmark: S('<path d="M6 6l12 12M18 6 6 18" stroke-width="2.4"/>'),
+  book: S('<path d="M12 6.5C10.3 5 7.8 4.5 4 4.5v14c3.8 0 6.3.5 8 2 1.7-1.5 4.2-2 8-2v-14c-3.8 0-6.3.5-8 2Z"/><path d="M12 6.5v14"/>'),
+  lightbulb: S('<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3Z"/>'),
+  warn: S('<path d="M12 3.5 2.5 20h19Z"/><path d="M12 10v4.5M12 17.5v.01"/>'),
+  brain: S('<path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1V5a2 2 0 0 0-3-1ZM15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1"/>'),
+  target: S('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/>'),
   sealFill: S('<path d="M12 1.8l2.4 1.8 3-.1.9 2.8 2.5 1.7-1 2.9 1 2.9-2.5 1.7-.9 2.8-3-.1L12 20.2l-2.4-1.8-3 .1-.9-2.8-2.5-1.7 1-2.9-1-2.9 2.5-1.7.9-2.8 3 .1Zm3.6 7.4a1 1 0 0 0-1.4.1l-3.1 3.7-1.5-1.4A1 1 0 1 0 8.2 13l2.3 2.2a1 1 0 0 0 1.5-.1l3.8-4.5a1 1 0 0 0-.2-1.4Z"/>', true),
 };
 
@@ -72,6 +77,7 @@ const store = {
   rankByTopic: {},
   records: {},
   daily: {},
+  read: {},
 
   init(topics, questions) {
     this.topics = topics;
@@ -154,7 +160,10 @@ const store = {
     this.daily[key] = d;
     this.save();
   },
-  reset() { this.records = {}; this.daily = {}; this.save(); },
+  reset() { this.records = {}; this.daily = {}; this.read = {}; this.save(); },
+  isRead(t) { return this.read[t.id] ? 1 : 0; },
+  toggleRead(id) { if (this.read[id]) delete this.read[id]; else this.read[id] = new Date().toISOString(); this.save(); },
+  get readCount() { return this.topics.filter((t) => this.read[t.id]).length; },
 
   get totalAnswered() { return Object.values(this.daily).reduce((a, d) => a + d.answered, 0); },
   get totalCorrect() { return Object.values(this.daily).reduce((a, d) => a + d.correct, 0); },
@@ -190,12 +199,12 @@ const store = {
   get masteredTopics() { return this.topics.filter((t) => this.mastery(t) >= 0.999).length; },
 
   save() {
-    try { localStorage.setItem("takken-progress", JSON.stringify({ records: this.records, daily: this.daily })); } catch (e) {}
+    try { localStorage.setItem("takken-progress", JSON.stringify({ records: this.records, daily: this.daily, read: this.read })); } catch (e) {}
   },
   load() {
     try {
       const s = JSON.parse(localStorage.getItem("takken-progress") || "null");
-      if (s) { this.records = s.records || {}; this.daily = s.daily || {}; }
+      if (s) { this.records = s.records || {}; this.daily = s.daily || {}; this.read = s.read || {}; }
     } catch (e) {}
   },
 };
@@ -226,7 +235,7 @@ function topicRow(t) {
   return `<div class="topic-row">
     <div class="rank rounded">${store.rank(t)}</div>
     <div class="body">
-      <div class="t">${esc(t.title)}</div>
+      <div class="t">${esc(t.title)}${store.isRead(t) ? `<span class="readmark">${I.checkFill}</span>` : ""}</div>
       <div class="meta">${subjectTag(t.subject)}<span class="caption2 secondary">約${t.estimatedCount}問/10年</span></div>
       ${progressBar(store.mastery(t), SUBJ[t.subject].color)}
     </div>
@@ -263,26 +272,77 @@ function inlineNav(title, backTitle) {
 /* ================= Navigation state ================= */
 const TABS = [
   { key: "home", label: "ホーム", icon: I.house, iconOn: I.houseFill, title: "宅建 出る順" },
-  { key: "ranking", label: "出る順", icon: I.listNumber, title: "出る順" },
-  { key: "practice", label: "問題", icon: I.pencilSquare, title: "問題" },
+  { key: "learn", label: "学ぶ", icon: I.book, title: "学ぶ" },
+  { key: "practice", label: "解く", icon: I.pencilSquare, title: "解く" },
   { key: "stats", label: "記録", icon: I.chartBar, title: "記録" },
 ];
 const ui = {
   tab: "home",
-  stacks: { home: [], ranking: [], practice: [], stats: [] }, // pushed topic ids
-  filter: null,
+  stacks: { home: [], learn: [], practice: [], stats: [] }, // pushed topic ids
+  learnSort: "rank",   // rank | subject | unread
+  learnSubj: null,
+  qSort: "rank",       // rank | subject | weak | new
+  qSubj: null,
+  qKind: null,         // null | tf | mc
   quiz: null,
   confirmReset: false,
   pushedAnim: false,
 };
 
+const SORTS_LEARN = [["rank", "出る順"], ["subject", "科目別"], ["unread", "未読から"]];
+const SORTS_Q = [["rank", "出る順"], ["subject", "科目別"], ["weak", "苦手順"], ["new", "未回答"]];
+
+function segmented(items, current, act) {
+  return `<div class="seg">${items.map(([v, l]) => `<button class="${current === v ? "on" : ""}" data-act="${act}" data-v="${v}">${l}</button>`).join("")}</div>`;
+}
+function subjSeg(current, act) {
+  return segmented([["", "すべて"]].concat(SUBJECTS.map((s) => [s.key, s.short])), current || "", act);
+}
+
+/* ---------- 並べ替え ---------- */
+function learnTopics() {
+  let ts = store.rankedTopics.filter((t) => !ui.learnSubj || t.subject === ui.learnSubj);
+  if (ui.learnSort === "unread") ts = [...ts].sort((a, b) => (store.isRead(a) - store.isRead(b)) || (store.rank(a) - store.rank(b)));
+  return ts;
+}
+function accuracyOf(q) {
+  const r = store.records[q.id];
+  return r ? r.correct / r.attempts : null;
+}
+function practiceQuestions() {
+  let qs = store.rankedQuestions.filter((q) =>
+    (!ui.qSubj || store.topicFor(q)?.subject === ui.qSubj) && (!ui.qKind || q.kind === ui.qKind));
+  if (ui.qSort === "weak") {
+    qs = qs.filter((q) => store.records[q.id]).sort((a, b) => (accuracyOf(a) - accuracyOf(b)) || ((store.records[b.id].attempts) - (store.records[a.id].attempts)));
+  } else if (ui.qSort === "new") {
+    qs = qs.filter((q) => !store.records[q.id]);
+  } else if (ui.qSort === "subject") {
+    qs = [...qs].sort((a, b) => SUBJ[store.topicFor(a).subject].order - SUBJ[store.topicFor(b).subject].order || 0);
+  }
+  return qs;
+}
+function groupBySubject(items, subjOf) {
+  return SUBJECTS.map((s) => ({ s, items: items.filter((x) => subjOf(x) === s.key) })).filter((g) => g.items.length);
+}
+
 /* ================= Screens ================= */
 function homeScreen() {
   const rq = store.reviewQueue;
   const top = store.rankedTopics.slice(0, 5);
+  const nextT = store.rankedTopics.find((t) => !store.isRead(t));
+  const readN = store.readCount, totalT = store.topics.length;
+  const doneQ = store.questions.filter((q) => store.records[q.id]).length;
   return `${largeNav("宅建 出る順")}<div class="scroll"><div class="large-title">宅建 出る順</div>
   <div class="home">
     <div class="card stat-row">${stat(String(store.todayAnswered), "今日の問題")}<div class="vdiv"></div>${stat(store.accuracyText, "正答率")}<div class="vdiv"></div>${stat(store.streak + "日", "連続学習")}</div>
+    <div class="card stack" style="gap:12px">
+      <div class="stack" style="gap:6px"><div class="prog-head"><span class="subheadline semibold">インプット</span><span class="caption secondary mono">${readN} / ${totalT} 論点</span></div>${progressBar(readN / totalT)}</div>
+      <div class="stack" style="gap:6px"><div class="prog-head"><span class="subheadline semibold">アウトプット</span><span class="caption secondary mono">${doneQ} / ${store.questions.length} 問</span></div>${progressBar(doneQ / store.questions.length, "var(--c-gyoho)")}</div>
+    </div>
+    ${nextT ? `<button class="card next-lesson" data-act="topic" data-id="${nextT.id}" data-gotab="learn">
+      <span class="nl-icon">${I.book}</span>
+      <span class="stack" style="flex:1;gap:3px;min-width:0"><span class="caption secondary">次に読む論点（出る順 ${store.rank(nextT)}位）</span><span class="headline">${esc(nextT.title)}</span></span>
+      <span class="chev">${I.chevR}</span></button>` : ""}
     <button class="start" data-act="launch" data-launch="next10" data-title="出る順で10問">
       <div style="flex:1"><div class="t">出る順で10問</div><div class="s">よく出る論点の、まだ解いていない・間違えた問題から</div></div>
       ${I.playCircleFill}
@@ -298,59 +358,105 @@ function homeScreen() {
   </div></div>`;
 }
 
-function rankingScreen() {
-  const topics = store.rankedTopics.filter((t) => ui.filter == null || t.subject === ui.filter);
-  const seg = [`<button class="${ui.filter == null ? "on" : ""}" data-act="filter" data-v="">すべて</button>`]
-    .concat(SUBJECTS.map((s) => `<button class="${ui.filter === s.key ? "on" : ""}" data-act="filter" data-v="${s.key}">${s.short}</button>`))
-    .join("");
-  return `${largeNav("出る順")}<div class="scroll"><div class="large-title">出る順</div><div class="list">
-    <div class="section"><div class="seg">${seg}</div></div>
-    <div class="section"><div class="rows">${topics.map((t) => `<button class="row" style="--inset:60px" data-act="topic" data-id="${t.id}">${topicRow(t)}<span class="chev">${I.chevR}</span></button>`).join("")}</div>
-    <div class="section-footer">類題を含めた過去10年の出題数（目安）が多い順。S＝毎年複数問、A＝ほぼ毎年、B＝よく出る、C＝ときどき。</div></div>
+function topicRowsHTML(ts) {
+  return `<div class="rows">${ts.map((t) => `<button class="row" style="--inset:60px" data-act="topic" data-id="${t.id}">${topicRow(t)}<span class="chev">${I.chevR}</span></button>`).join("")}</div>`;
+}
+
+function learnScreen() {
+  const ts = learnTopics();
+  let body;
+  if (ui.learnSort === "subject") {
+    body = groupBySubject(ts, (t) => t.subject).map((g) =>
+      `<div class="section"><div class="section-header">${esc(g.s.key)}（本試験${g.s.exam}問・${g.items.length}論点）</div>${topicRowsHTML(g.items)}</div>`).join("");
+  } else {
+    body = `<div class="section">${topicRowsHTML(ts)}</div>`;
+  }
+  return `${largeNav("学ぶ")}<div class="scroll"><div class="large-title">学ぶ</div><div class="list">
+    <div class="section stack" style="gap:8px">${segmented(SORTS_LEARN, ui.learnSort, "lsort")}${subjSeg(ui.learnSubj, "lsubj")}</div>
+    ${body}
+    <div class="section-footer">読み終えた論点には緑のチェックが付きます。出る順は、類題を含めた過去10年の出題数（目安）が多い順です。S＝毎年複数問、A＝ほぼ毎年、B＝よく出る、C＝ときどき。</div>
   </div></div>`;
 }
 
 function topicScreen(t, backTitle) {
   const qs = store.questionsFor(t);
   const g = grade(t.estimatedCount);
+  const order = store.rankedTopics;
+  const i = order.indexOf(t);
+  const prev = order[i - 1], next = order[i + 1];
+  const read = store.isRead(t);
+  const L = (h, inner, cls = "") => `<div class="card lesson ${cls}"><div class="lh">${h}</div>${inner}</div>`;
+  const paras = (s) => s.split("\n").map((p) => `<p>${esc(p)}</p>`).join("");
   return `${inlineNav(t.title, backTitle)}<div class="scroll"><div class="detail">
     <div class="stack" style="gap:8px">
       <div style="display:flex;align-items:center;gap:8px">${gradeBadge(g)}<span class="subheadline semibold" style="flex:1">出る順 ${store.rank(t)}位 · ${GRADE_CAPTION[g]}</span>${subjectTag(t.subject)}</div>
-      <div>${esc(t.summary)}</div>
+      <div class="lesson-title">${esc(t.title)}</div>
       <div class="caption secondary">類題を含む過去10年の出題：約${t.estimatedCount}問（目安）</div>
     </div>
-    <div class="card stack" style="gap:10px"><div class="headline">要点</div>
-      ${t.points.map((p) => `<div class="point">${I.checkFill}<span>${esc(p)}</span></div>`).join("")}</div>
+    ${L(`${I.sparkles}ひとことで`, `<p class="lead">${esc(t.summary)}</p>`, "lead-card")}
+    ${t.terms && t.terms.length ? L(`${I.book}まず押さえる用語`, `<dl class="terms">${t.terms.map(([a, b]) => `<dt>${esc(a)}</dt><dd>${esc(b)}</dd>`).join("")}</dl>`) : ""}
+    ${(t.sections || []).map(([h, b], k) => L(`<span class="num-dot">${k + 1}</span>${esc(h)}`, paras(b))).join("")}
+    ${t.example ? L(`${I.lightbulb}具体例で確認`, paras(t.example), "ex-card") : ""}
+    ${t.traps && t.traps.length ? L(`${I.warn}ひっかけ注意`, `<ul class="traps">${t.traps.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`, "trap-card") : ""}
+    ${t.memory ? L(`${I.brain}覚え方`, `<p>${esc(t.memory)}</p>`, "mem-card") : ""}
+    ${L(`${I.checkFill}要点まとめ`, t.points.map((p) => `<div class="point">${I.checkFill}<span>${esc(p)}</span></div>`).join(""), "sum-card")}
     <div class="btn2">
       <button class="yt" data-act="yt" data-id="${t.id}">${I.playRectFill}解説動画</button>
       <button class="go" data-act="launch" data-launch="topic:${t.id}" data-title="${esc(t.title)}" ${qs.length ? "" : "disabled"}>${I.pencil}${qs.length}問解く</button>
     </div>
-    <div class="headline" style="padding-top:4px">問題</div>
+    <button class="read-btn${read ? " on" : ""}" data-act="toggleread" data-id="${t.id}">${read ? I.checkFill + "読んだ（タップで取り消し）" : I.circle + "この論点を読んだ"}</button>
+    <div class="headline" style="padding-top:4px">この論点の問題</div>
     ${qs.map(questionRow).join("")}
+    <div class="pn">
+      ${prev ? `<button data-act="swaptopic" data-id="${prev.id}">${I.chevL}<span><small>前の論点（${store.rank(prev)}位）</small>${esc(prev.title)}</span></button>` : "<span></span>"}
+      ${next ? `<button class="r" data-act="swaptopic" data-id="${next.id}"><span><small>次の論点（${store.rank(next)}位）</small>${esc(next.title)}</span>${I.chevR}</button>` : "<span></span>"}
+    </div>
   </div></div>`;
 }
 
 function practiceScreen() {
-  const years = store.pastYears;
-  return `${largeNav("問題")}<div class="scroll"><div class="large-title">問題</div><div class="list">
+  const qs = practiceQuestions();
+  const kindSeg = segmented([["", "すべて"], ["tf", "一問一答"], ["mc", "四肢択一"]], ui.qKind || "", "qkind");
+  const emptyMsg = ui.qSort === "weak" ? "まだ解いた問題がありません。" : ui.qSort === "new" ? "この条件の未回答の問題はありません。" : "該当する問題がありません。";
+  let list;
+  if (!qs.length) list = `<div class="card footnote secondary">${emptyMsg}</div>`;
+  else if (ui.qSort === "subject") {
+    list = groupBySubject(qs, (q) => store.topicFor(q).subject).map((g) =>
+      `<div class="section-header" style="padding:12px 4px 0">${esc(g.s.key)}（${g.items.length}問）</div>${g.items.map(practiceRow).join("")}`).join("");
+  } else list = qs.map(practiceRow).join("");
+  const sortLabel = SORTS_Q.find((x) => x[0] === ui.qSort)[1];
+  return `${largeNav("解く")}<div class="scroll"><div class="large-title">解く</div><div class="list">
     <div class="section"><div class="section-header">おすすめ</div><div class="rows">
       ${launcher("出る順で10問", I.flame, "未回答・間違えた問題を出る順に", "next10")}
       ${launcher("復習", I.counter, `${store.reviewQueue.length}問`, "review")}
+      ${launcher("苦手な問題10問", I.target, "正答率の低い問題から", "weak10")}
       ${launcher("ランダム10問", I.shuffle, `全${store.questions.length}問から`, "random10")}
     </div></div>
-    <div class="section"><div class="section-header">科目別（出る順）</div><div class="rows">
-      ${SUBJECTS.map((s) => launcher(s.key, s.icon, `${store.questionsSubject(s.key).length}問 · 本試験${s.exam}問`, "subject:" + s.key, s.color)).join("")}
-    </div></div>
-    <div class="section"><div class="section-header">年度別（過去問）</div><div class="rows">
-      ${years.length
-        ? years.map((y) => launcher(wareki(y), I.calendar, `${store.questionsYear(y).length}問`, "year:" + y)).join("")
-        : `<div class="row footnote secondary">過去問データを取り込むと、年度ごとに解けるようになります。</div>`}
-    </div></div>
-    <div class="section"><div class="section-header">形式</div><div class="rows">
-      ${launcher("一問一答（○×）", I.circleCircle, `${store.questionsKind("tf").length}問`, "kind:tf")}
-      ${launcher("四肢択一", I.listRect, `${store.questionsKind("mc").length}問`, "kind:mc")}
-    </div></div>
+    <div class="section"><div class="section-header">並べ替え・絞り込み</div>
+      <div class="stack" style="gap:8px">${segmented(SORTS_Q, ui.qSort, "qsort")}${subjSeg(ui.qSubj, "qsubj")}${kindSeg}</div>
+    </div>
+    <div class="section stack" style="gap:10px">
+      <button class="primary" data-act="launch" data-launch="custom" data-title="${esc(sortLabel)}で解く" ${qs.length ? "" : "disabled"}>この並びで解く（${qs.length}問）</button>
+      ${list}
+    </div>
   </div></div>`;
+}
+
+function practiceRow(q) {
+  const t = store.topicFor(q);
+  const acc = accuracyOf(q);
+  const r = store.records[q.id];
+  const st = store.status(q);
+  const icon = st === true ? `<span style="color:var(--good)">${I.checkFill}</span>`
+    : st === false ? `<span style="color:var(--bad)">${I.xFill}</span>`
+    : `<span class="tertiary">${I.circle}</span>`;
+  return `<button class="card qrow" data-act="launch" data-launch="one:${q.id}" data-title="問題">
+    <div class="st">${icon}</div>
+    <div class="stack" style="gap:4px;min-width:0;flex:1">
+      <div class="qmeta">${gradeBadge(grade(t.estimatedCount))}<span>${store.rank(t)}位 · ${esc(t.title)}</span></div>
+      <div class="qt">${esc(q.text)}</div>
+      <div class="src">${q.kind === "mc" ? "<span>四肢択一</span>" : "<span>一問一答</span>"}${r ? `<span class="mono">正答率 ${Math.round(acc * 100)}%（${r.correct}/${r.attempts}）</span>` : "<span>未回答</span>"}</div>
+    </div></button>`;
 }
 
 function chartSVG(days) {
@@ -390,6 +496,7 @@ function statsScreen() {
       }).join("")}
     </div></div>
     <div class="section"><div class="section-header">論点の習得</div><div class="rows"><div class="row">
+      <span style="flex:1">読んだ論点</span><span class="secondary mono">${store.readCount} / ${store.topics.length}</span></div><div class="row">
       <span style="flex:1">全問正解した論点</span><span class="secondary mono">${store.masteredTopics} / ${store.topics.length}</span></div></div></div>
     <div class="section"><div class="rows"><button class="row danger" data-act="askreset">学習記録をリセット</button></div></div>
   </div></div>`;
@@ -517,7 +624,7 @@ function screenFor(tab) {
     const prevTitle = st.length > 1 ? store.topicByID[st[st.length - 2]].title : TABS.find((x) => x.key === tab).title;
     return topicScreen(t, prevTitle);
   }
-  return { home: homeScreen, ranking: rankingScreen, practice: practiceScreen, stats: statsScreen }[tab]();
+  return { home: homeScreen, learn: learnScreen, practice: practiceScreen, stats: statsScreen }[tab]();
 }
 
 function render() {
@@ -573,12 +680,15 @@ function bindLargeTitle(sc) {
 function launchList(key) {
   if (key === "next10") return store.nextSet(10);
   if (key === "review") return store.reviewQueue;
+  if (key === "custom") return practiceQuestions();
+  if (key === "weak10") return store.rankedQuestions.filter((q) => store.records[q.id]).sort((a, b) => accuracyOf(a) - accuracyOf(b)).slice(0, 10);
   if (key === "random10") return [...store.questions].sort(() => Math.random() - 0.5).slice(0, 10);
   const [k, v] = key.split(":");
   if (k === "topic") return store.questionsFor(store.topicByID[v]);
   if (k === "subject") return store.questionsSubject(v);
   if (k === "year") return store.questionsYear(Number(v));
   if (k === "kind") return store.questionsKind(v);
+  if (k === "one") { const qs = practiceQuestions(); const i = qs.findIndex((q) => q.id === v); return i >= 0 ? qs.slice(i) : store.questions.filter((q) => q.id === v); }
   return [];
 }
 
@@ -594,6 +704,7 @@ app.addEventListener("click", (e) => {
       render();
       break;
     case "topic":
+      if (el.dataset.gotab) { ui.tab = el.dataset.gotab; ui.stacks[ui.tab] = []; }
       ui.stacks[ui.tab].push(el.dataset.id);
       ui.pushedAnim = ui.tab;
       render();
@@ -602,10 +713,20 @@ app.addEventListener("click", (e) => {
       ui.stacks[ui.tab].pop();
       render();
       break;
-    case "filter":
-      ui.filter = el.dataset.v || null;
+    case "lsort": ui.learnSort = el.dataset.v; render(); break;
+    case "lsubj": ui.learnSubj = el.dataset.v || null; render(); break;
+    case "qsort": ui.qSort = el.dataset.v; render(); break;
+    case "qsubj": ui.qSubj = el.dataset.v || null; render(); break;
+    case "qkind": ui.qKind = el.dataset.v || null; render(); break;
+    case "toggleread": store.toggleRead(el.dataset.id); render(); break;
+    case "swaptopic": {
+      const st = ui.stacks[ui.tab];
+      st[st.length - 1] = el.dataset.id;
+      scrollMemo[ui.tab + ":" + st.length] = 0;
+      ui.pushedAnim = ui.tab;
       render();
       break;
+    }
     case "launch": {
       const qs = launchList(el.dataset.launch);
       const title = el.dataset.title;
